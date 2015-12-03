@@ -60,3 +60,6 @@ docs/_build/
 # PyBuilder
 target/
 
+# Personal files for testing uritool
+uriconfig.ini
+urlcache.db
