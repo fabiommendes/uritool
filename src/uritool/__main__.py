@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+from . import config
 
 
 def grade_sub_parser(subparser):
@@ -110,6 +111,8 @@ def main(args=None):
 # Action runners
 #
 def run_grade_command(exam, reset=False):
+    from .grader import Grader
+
     main_csv = get_main_csv()
     students = dict(zip(main_csv.index, main_csv['name']))
     grader = Grader(students, path='exam-%s.csv' % exam)
@@ -127,6 +130,9 @@ def run_compile_command(pdf=False):
 
 def run_uri_academic_command(discipline, auth=None, silent=False,
                              delay_penalty=None):
+    import pandas as pd
+    from . import urilib
+
     # Get valid authentication
     auth = auth or ':'
     username, password = auth.split(':')
@@ -202,6 +208,8 @@ def run_uri_academic_command(discipline, auth=None, silent=False,
 def get_main_csv():
     """Return a DataFrame holding data of the main.csv file"""
 
+    import pandas as pd
+
     try:
         df = pd.read_csv('main.csv')
     except FileNotFoundError:
@@ -226,6 +234,8 @@ def save_main_pdf(df):
 def make_main_csv():
     """Return a data frame with the collected content for the main.csv file."""
 
+    import pandas as pd
+
     # Start with an empty data frame
     index = pd.Series([], name='id')
     main_df = pd.DataFrame([], index=index)
@@ -246,6 +256,8 @@ def make_main_csv():
 
 def students_csv():
     """Return a data frame with data in students.csv."""
+
+    import pandas as pd
 
     try:
         df = pd.read_csv('students.csv')
