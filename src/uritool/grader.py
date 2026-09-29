@@ -139,7 +139,7 @@ class Grader:
             except FinishGrading:
                 break
 
-        if input('See grades? [Y/n] ').casefold() in ['y', '']:
+        if yes('Show grades? [Y/n] ', True):
             print(self.report())
 
     def step(self):
@@ -194,19 +194,15 @@ class Grader:
         if not student:
             student = input('Bad student name, try again: ')
         if not student:
-            response = input('Do you want to leave? [Y/n] ')
-            if response.casefold() in ['y', '']:
+            if yes('Do you want to leave? [Y/n] ', True):
                 raise FinishGrading
-
-
             else:
                 return self.select()
 
         # Match name with list
         matches = self.matches(student)
         if not matches:
-            response = input('Not found!\nWant to add it [y/N]? ')
-            if response.casefold() == 'y':
+            if yes('Not found!\nWant to add it [y/N]? '):
                 return self.add_student(student)
             else:
                 raise CancelOperation
@@ -333,9 +329,24 @@ class Grader:
 
     def __auto_validate_grade(self):
         def validator(x):
+            if isinstance(x, str):
+                x = x.replace(',', '.')
             try:
                 return Decimal(x)
             except ValueError:
                 raise ValidationError
 
         return validator
+
+
+def yes(msg, default=False):
+    """Return True if the user type yes, False if types no or the default value
+    otherwise."""
+
+    response = input(msg).casefold()
+    if response in ['y', 'yes']:
+        return True
+    elif response in ['n', 'no']:
+        return False
+    else:
+        return default

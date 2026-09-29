@@ -1,5 +1,5 @@
 def _read_config():
-    """Read configuration in .uriconfig.ini."""
+    """Read configuration in uriconfig.ini."""
 
     import configparser
     import os

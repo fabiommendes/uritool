@@ -29,7 +29,7 @@ def uri_academic_sub_parser(subparser):
         help='discipline code in URI academic.',
     )
     parser.add_argument(
-        '--silent', '-s',
+        '--silent',
         help='run silently',
         action='store_const', const=True,
     )
@@ -37,6 +37,36 @@ def uri_academic_sub_parser(subparser):
         '--delay-penalty', '-p',
         help='if given, delayed submissions will be accepted, but will receive'
              'the given penalty. It must be in the 0-100 range.'
+    )
+    parser.add_argument(
+        '--normalize', '-n',
+        help='normalization constant for the maximum grade (default 100).'
+    )
+    parser.add_argument(
+        '--sep', '-s',
+        help='separator character in the CSV file.'
+    )
+    parser.add_argument(
+        '--decimal', '-ds',
+        help='define the decimal separator (usually either . or ,)',
+    )
+    return parser
+
+
+def uri_cache_sub_parser(subparser):
+    parser = subparser('uri-cache', help='controls cached data fetched from '
+                       'URI website')
+    parser.add_argument(
+        '--clear-profile', '-p',
+        help='remove all data from the given profile',
+    )
+    parser.add_argument(
+        '--clear-all',
+        help='clear all data.',
+    )
+    parser.add_argument(
+        '--clear-academic', '-a',
+        help='remove all data from URI-Academic',
     )
     return parser
 
@@ -74,8 +104,9 @@ def full_parser():
     )
     subparsers = parser.add_subparsers(dest='command')
     grade_sub_parser(subparsers.add_parser)
-    uri_academic_sub_parser(subparsers.add_parser)
     compile_sub_parser(subparsers.add_parser)
+    uri_academic_sub_parser(subparsers.add_parser)
+    uri_cache_sub_parser(subparsers.add_parser)
     return parser
 
 
@@ -96,6 +127,7 @@ def main(args=None):
         'grade'       : run_grade_command,
         'compile'     : run_compile_command,
         'uri-academic': run_uri_academic_command,
+        'uri-cache'   : run_uri_cache_command,
     }
     try:
         action = actions[args.command]
@@ -113,8 +145,8 @@ def main(args=None):
 def run_grade_command(exam, reset=False):
     from .grader import Grader
 
-    main_csv = get_main_csv()
-    students = dict(zip(main_csv.index, main_csv['name']))
+    csv = main_csv()
+    students = dict(zip(csv.index, csv['name']))
     grader = Grader(students, path='exam-%s.csv' % exam)
     if reset:
         grader.data['grade'] = float('nan')
@@ -129,7 +161,8 @@ def run_compile_command(pdf=False):
 
 
 def run_uri_academic_command(discipline, auth=None, silent=False,
-                             delay_penalty=None):
+                             delay_penalty=None, normalize=None, sep=',',
+                             decimal=False):
     import pandas as pd
     from . import urilib
 
@@ -146,6 +179,8 @@ def run_uri_academic_command(discipline, auth=None, silent=False,
         raise SystemExit(msg)
 
     # Fetch from academic and print
+    if delay_penalty is not None:
+        delay_penalty = float(delay_penalty) / 100
     table = urilib.get_progress(discipline=discipline,
                                 username=username,
                                 password=password,
@@ -189,34 +224,51 @@ def run_uri_academic_command(discipline, auth=None, silent=False,
     columns = list(table.columns)
     columns.insert(1, columns.pop())
     table = table[columns]
+    table.sort_index(inplace=True)
+
+    # Normalize table
+    if normalize is not None and normalize != 100:
+        names = table.pop('name')
+        uri_ids = table.pop('uri id')
+        table *= float(normalize) / 100
+        table.insert(0, 'name', names)
+        table.insert(1, 'uri id', uri_ids)
 
     # FIXME: save with backup
-    table.to_csv('uri.csv')
+    if sep is None and decimal == ',':
+        sep = ';'
+
+    # FIXME: some bug in pandas prevents decimal parameter from working?
+    data = table.to_csv(decimal=decimal, sep=sep or ',')
+    if decimal != '.':
+        data = data.replace('.', decimal)
+    with open('uri.csv', 'w') as F:
+        F.write(data)
 
     # Print table
     if not silent:
-        print('TABLE HEAD\n==========')
-        print(table.head())
-        print('...\n')
-        print('TABLE TAIL\n==========')
-        print(table.head())
+        print(table)
+
+
+def run_uri_cache_command(**kwds):
+    print(kwds)
+    raise NotImplementedError
 
 
 #
 # Utilities
 #
-def get_main_csv():
+def main_csv():
     """Return a DataFrame holding data of the main.csv file"""
 
     import pandas as pd
 
     try:
         df = pd.read_csv('main.csv')
-    except FileNotFoundError:
-        index = pd.Series([], name='id')
-        return pd.DataFrame([], index=index)
-    df.index = df['id']
-    return df
+        df.index = df['id']
+        return df
+    except (FileNotFoundError, OSError):
+        return students_csv()
 
 
 def save_main_csv(df):
@@ -242,11 +294,11 @@ def make_main_csv():
 
     # Collect all exams
     files = [f for f in os.listdir(os.getcwd())
-             if f.startswith('exam-') and f.endswith('.csv')]
+               if f.startswith('exam-') and f.endswith('.csv')]
     for f in files:
         name = f[5:-4]
         df = pd.read_csv(f)
-        df.index = df['id']
+        df.index = df.pop('id')
         main_df[name] = df['grade']
 
     # Collect all data from URI academic
@@ -263,10 +315,8 @@ def students_csv():
         df = pd.read_csv('students.csv')
     except OSError:
         index = pd.Series([], name='id')
-        df = pd.DataFrame({
-                              'name'  : [],
-                              'uri id': []
-                              }, index=index)
+        df = pd.DataFrame({'name'  : [],
+                           'uri id': []}, index=index)
         df.to_csv('students.csv')
         return df
     df.index = df['id']

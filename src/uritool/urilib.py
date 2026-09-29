@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from collections import namedtuple, OrderedDict
 from lxml import html as etree
-from uritool.httpcache import htmlopen, urlcache, urlopen, urldate
+from uritool.httpcache import htmlopen, urlcache, urlopen, urldate, urlremove
 from uritool.util import normalize_language
 from uritool import config
 
@@ -19,25 +19,72 @@ profile_fields = ('username university country solved tried submissions '
                   'ranking date').split()
 Problem = namedtuple('Problem', problem_fields)
 Profile = namedtuple('Profile', profile_fields)
-
-__version__ = '0.2'
+PROBLEM_URL = ('https://www.urionlinejudge.com.br/judge/pt/profile/'
+               '%s/page:%s/sort:run_id/direction:asc')
+PROFILE_URL = ('https://www.urionlinejudge.com.br/judge/pt/profile/'
+               '%s/page:1/sort:run_id/direction:asc')
 
 
 #
 # Extract problems and information from the website
 #
-def get_public_problems(profile, verbose=True):
-    """Extract public submissions from the given profile."""
+def get_public_problems(profile, verbose=True, __raise_fast=False):
+    """Extract public submissions from the given profile.
+
+    Parameters
+    ----------
+
+    profile : int
+        URI id for the student profile.
+
+    Returns
+    -------
+
+    pd.DataFrame:
+        A table with data from all public submissions.
+
+    Examples
+    --------
+
+    >>> get_public_problems(3507, verbose=False)
+                                name  ranking submission      lang   time  \
+    id
+    1001         Extremamente Básico     1309     107698       C++  0.000
+    1003                Soma Simples     1091     107709       C++  0.000
+    1187               Área Superior      144     112189       C++  0.000
+    1002             Área do Círculo    22200    2611328  Python 3  0.036
+    1036         Fórmula de Bhaskara     9221    2611378  Python 3  0.020
+    1010             Cálculo Simples    18173    2615114  Python 3  0.024
+    1078                     Tabuada     8769    2665498  Python 3  0.016
+    1004             Produto Simples    25363    2936115  Python 3  0.036
+    1018                     Cédulas    11766    3028201         C  0.000
+    1253              Cifra de César     1940    3028245    Python  0.324
+    1178  Preenchimento de Vetor III     4800    3069848  Python 3  0.028
+    1789         A Corrida de Lesmas     1409    3069927  Python 3  0.200
+
+                      date
+    0  2013-04-07 12:58:44
+    1  2013-04-07 13:04:36
+    2  2013-04-12 16:40:46
+    3  2015-08-16 00:40:53
+    4  2015-08-16 00:53:41
+    5  2015-08-16 23:40:16
+    6  2015-08-24 11:36:38
+    7  2015-09-29 21:15:05
+    8  2015-10-13 18:01:48
+    9  2015-10-13 18:08:19
+    10 2015-10-19 13:13:46
+    11 2015-10-19 13:29:46
+
+    """
 
     problems = []
-    urlbase = ('https://www.urionlinejudge.com.br/judge/pt/profile/'
-               '%s/page:%s/sort:run_id/direction:asc')
     refreshed = set()
     i = 0
 
     while True:
         i += 1
-        url = urlbase % (profile, i)
+        url = PROBLEM_URL % (profile, i)
 
         # Read html or break if encounter an error page
         try:
@@ -77,14 +124,35 @@ def get_public_problems(profile, verbose=True):
             break
 
     # Create dataframe
-    return pd.DataFrame(problems, columns=problem_fields)
+    result = pd.DataFrame(problems, columns=problem_fields)
+    result.index = result.pop('id')
+
+    # Validate index
+    if not result.index.is_unique:
+        if __raise_fast:
+            msg = 'profile %s cache is in an invalid state'
+            raise ValueError(msg % profile)
+        refresh_profile(profile)
+        return get_public_problems(profile, verbose, __raise_fast=True)
+
+    return result
+
+
+def refresh_profile(profile):
+    """Clear all cached items related to the given profile."""
+
+    for i in range(1, 1000):
+        url = PROBLEM_URL % (profile, i)
+        try:
+            urlremove(url)
+        except KeyError:
+            break
 
 
 def get_public_profile(profile, verbose=True):
     """View all non-problem related information in the public profile."""
 
-    url = ('https://www.urionlinejudge.com.br/judge/pt/profile/'
-           '%s/page:1/sort:run_id/direction:asc') % profile
+    url = PROFILE_URL % profile
     html = htmlopen(url, verbose=verbose)
     username = html.xpath('//div[@class="pb-username"]')[0].text_content()
     info = html.xpath('//ul[@class="pb-information"]/li')
@@ -150,24 +218,41 @@ def get_progress(discipline=None, username=None, password=None,
 
     if delay_penalty is None:
         return discipline.full_grades()
-    delay_penalty = 1.0
 
     # Fetch all student responses
-    student_problems = {id_: get_public_problems(id_)
-                        for id_ in discipline.students.index}
+    student_indexes = discipline.students.index
+    students = {id_: get_public_problems(id_) for id_ in student_indexes}
 
     # Fetch graded homeworks and try to merge both
-    homework_ids = discipline.homeworks.id
-    data = [discipline.progress(id).fillna(0) for id in homework_ids]
-    df = pd.DataFrame()
+    homework_ids = discipline.homeworks.index
+    data = [discipline.progress(id_).fillna(0) for id_ in homework_ids]
+
+    # Create the output table and iterate over all homeworks
+    # Each "homework" is a table with students in each row and problems in
+    # each column.
+    df = pd.DataFrame(discipline.students['name'])
     for hw_id, homework in zip(homework_ids, data):
         problems = [int(col.partition(' ')[0]) for col in homework.columns]
-        for idx, row in homework.iterrows():
-            solved = set(p for p in problems if p in student_problems[idx])
-            for p, result in row.items():
-                if not result and p in solved:
-                    row[p] = delayed_ratio * 100
+        homework.columns = problems
+        problems = set(problems)
+        deadline = discipline.homeworks.loc[hw_id]['deadline']
+
+        # Navigate the rows in each homework. Each row shows the progress of
+        # a particular student in each problem (in the columns).
+        for s_idx, student_progress in homework.iterrows():
+            student = students[s_idx]
+            for p_idx in problems.intersection(student.index):
+                if student_progress[p_idx] == 0:
+                    # Test if student passed the deadline and adjust grades
+                    # accordingly.
+                    problem = student.loc[p_idx]
+                    if problem.date > deadline:
+                        homework.loc[s_idx, p_idx] = 100 * (1 - delay_penalty)
+                    else:
+                        homework.loc[s_idx, p_idx] = 100
+
         df[hw_id] = homework.mean(1)
+
     return df
 
 
@@ -355,8 +440,12 @@ class Discipline:
         url = 'https://www.urionlinejudge.com.br/academic/disciplines/view/%s'
         html = self.__htmlopen(url % self.pk, refresh=False)
 
+        # Failed to login!
+        if html.xpath('//div[@class="page box box-about"]'):
+            raise ConnectionError('could not login to URI academic')
+
         # Main details
-        fields = html.xpath('//dl[@class="large"]/dd')
+        fields = html.xpath('//div/div/dl/dd')
         fields = [x.text_content().strip() for x in fields]
         self.title = fields[0]
         self.professor = fields[1]
@@ -365,22 +454,34 @@ class Discipline:
 
         # Homework list
         columns = 'id title deadline'.split()
-        table = html.xpath('//div[@class="homeworks index"]/table')[0]
-        data = [[x.text_content().strip() for x in row[1:4]]
-                for row in table[1:]]
-        self.homeworks = df = pd.DataFrame(data, columns=columns)
-        df['deadline'] = [getdate(x) for x in df['deadline']]
-        df.index = pd.Index([int(x) for x in df.pop('id')], name='id')
+        try:
+            table = html.xpath('//div[@class="homeworks index"]')[0]
+            table = table.xpath('table')[0]
+        except IndexError:
+            idx = pd.Index([], dtype=int, name='id')
+            self.homeworks = pd.DataFrame([], columns=columns[1:], index=idx)
+        else:
+            data = [[x.text_content().strip() for x in row[1:4]]
+                    for row in table[1:]]
+            self.homeworks = df = pd.DataFrame(data, columns=columns)
+            df['deadline'] = [getdate(x) for x in df['deadline']]
+            df.index = pd.Index([int(x) for x in df.pop('id')], name='id')
 
         # Students list
         columns = 'uri_id name terms permission accepted exercises ' \
                   'total'.split()
-        table = html.xpath('//div[@class="homeworks index"]/table')[1]
-        data = [[x.text_content().strip()
-                 for x in row[1:8]] for row in table[1:]]
-        self.students = df = pd.DataFrame(data, columns=columns)
-        df.index = pd.Index([int(x) for x in df.pop('uri_id')], name='uri_id')
-        del df['terms'], df['permission'], df['accepted']
+        try:
+            table = html.xpath('//div[@class="homeworks index"]')[1]
+            table = table.xpath('table')[0]
+        except IndexError:
+            idx = pd.Index([], dtype=int, name='id')
+            self.students = pd.DataFrame([], columns=columns[1:], index=idx)
+        else:
+            data = [[x.text_content().strip()
+                     for x in row[1:8]] for row in table[1:]]
+            self.students = df = pd.DataFrame(data, columns=columns)
+            df.index = pd.Index([int(x) for x in df.pop('uri_id')], name='uri_id')
+            del df['terms'], df['permission'], df['accepted']
 
 
 #
@@ -458,7 +559,3 @@ def _todatetime(st):
 def _ranking(st):
     return int(st[:-1])
 
-
-
-if __name__ == '__main__':
-    print(get_progress(delayed_ratio=0.5))

@@ -43,6 +43,13 @@ def urlrefresh(url, *args, **kwds):
     urlopen(url, *args, **kwds)
 
 
+def urlremove(url, *args, **kwds):
+    """Refresh chache for the given url."""
+
+    cache = urlcache()
+    cache.pop(url, None)
+
+
 def urldate(url):
     """Return the date for the url saved in cache."""
 
@@ -76,7 +83,7 @@ def urlopen(url, verbose=True, refresh=False, session=requests, expires=None,
     # Download data from the given url
     debug_print(verbose, '  Fetching url: %s' % url)
     timeout = 10 if url in cache else 30
-    try:
+    try:    
         request = session.get(url, timeout=timeout, **kwds)
     except:
         INTERNET_SLOW = True
@@ -95,3 +102,8 @@ def htmlopen(url, *args, **kwds):
     parser = etree.HTMLParser()
     data = urlopen(url, *args, **kwds)
     return etree.fromstring(data, parser=parser)
+
+def urlshow(url, *args, **kwds):
+    """Show the given url's data on screen."""
+
+    print(urlopen(url, *args, **kwds))
